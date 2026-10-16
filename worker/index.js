@@ -1,8 +1,10 @@
 // Point d'entrée du Worker Cloudflare : API JSON (même interface que le serveur Node), URL de push,
 // fichiers de l'interface et exécution planifiée chaque minute.
 //
-// Secrets (wrangler secret put …) : VIGIE_USER, VIGIE_PASSWORD — obligatoires, le Worker est public.
+// Secrets (wrangler secret put …) : VIGIE_USER, VIGIE_PASSWORD — le compte de l'interface, obligatoire.
+// Les fichiers de l'interface sont publics (ils ne contiennent aucune donnée) ; toute l'API est protégée.
 import * as engine from './engine.js';
+import * as session from '../shared/session.js';
 
 const json = (status, payload) =>
   new Response(JSON.stringify(payload), { status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' } });
@@ -18,24 +20,43 @@ async function readBody(request) {
   }
 }
 
-async function digest(s) {
-  return new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)));
+// --- Connexion -----------------------------------------------------------------
+
+const clientIp = (request) => request.headers.get('CF-Connecting-IP') || 'local';
+
+const isSecure = (url) => url.protocol === 'https:';
+
+async function loggedIn(request, env) {
+  return session.verifySession(session.readCookie(request.headers.get('Cookie')), env.VIGIE_USER, env.VIGIE_PASSWORD);
 }
 
-async function authorized(request, env) {
-  const header = request.headers.get('Authorization') || '';
-  if (!header.startsWith('Basic ')) return false;
-  let decoded;
-  try {
-    decoded = new TextDecoder().decode(Uint8Array.from(atob(header.slice(6)), (c) => c.charCodeAt(0)));
-  } catch {
-    return false;
+async function login(request, env, url) {
+  const db = env.DB;
+  const ip = clientIp(request);
+  const now = Date.now();
+  const row = await db.prepare('SELECT n, since FROM login_failures WHERE ip = ?1').bind(ip).first();
+  if (row && now - row.since < session.WINDOW && row.n >= session.MAX_FAILURES) {
+    return json(429, { error: 'Trop de tentatives : réessayez dans quelques minutes.' });
   }
-  const i = decoded.indexOf(':');
-  const [u, p] = [decoded.slice(0, i), decoded.slice(i + 1)];
-  // comparaison à temps constant, sur des empreintes pour avoir des longueurs égales
-  const [a, b, c, d] = await Promise.all([digest(u), digest(env.VIGIE_USER), digest(p), digest(env.VIGIE_PASSWORD)]);
-  return crypto.subtle.timingSafeEqual(a, b) & crypto.subtle.timingSafeEqual(c, d) ? true : false;
+  const { username, password } = await readBody(request);
+  if (!(await session.checkCredentials(username ?? '', password ?? '', env.VIGIE_USER, env.VIGIE_PASSWORD))) {
+    // une écriture D1 par échec seulement ; le compteur repart de zéro après la fenêtre
+    await db
+      .prepare(
+        `INSERT INTO login_failures (ip, n, since) VALUES (?1, 1, ?2)
+         ON CONFLICT(ip) DO UPDATE SET n = CASE WHEN ?2 - since > ?3 THEN 1 ELSE n + 1 END,
+                                        since = CASE WHEN ?2 - since > ?3 THEN ?2 ELSE since END`,
+      )
+      .bind(ip, now, session.WINDOW)
+      .run();
+    await new Promise((r) => setTimeout(r, 800)); // ralentit les essais en rafale
+    return json(401, { error: 'Identifiant ou mot de passe incorrect' });
+  }
+  if (row) await db.prepare('DELETE FROM login_failures WHERE ip = ?1').bind(ip).run();
+  const token = await session.createSession(env.VIGIE_USER, env.VIGIE_PASSWORD);
+  return new Response(JSON.stringify({ ok: true, user: env.VIGIE_USER }), {
+    headers: { 'Content-Type': 'application/json; charset=utf-8', 'Set-Cookie': session.sessionCookie(token, isSecure(url)) },
+  });
 }
 
 async function route(request, env, url) {
@@ -96,20 +117,20 @@ export default {
         return m ? json(200, { ok: true }) : json(404, { ok: false, error: 'Jeton inconnu' });
       }
 
+      if (!url.pathname.startsWith('/api/')) return env.ASSETS.fetch(request);
+
       if (!env.VIGIE_USER || !env.VIGIE_PASSWORD) {
-        return new Response('Vigie : définissez les secrets VIGIE_USER et VIGIE_PASSWORD (wrangler secret put).', {
-          status: 503,
-          headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+        return json(503, { error: 'Vigie : définissez les secrets VIGIE_USER et VIGIE_PASSWORD (wrangler secret put).' });
+      }
+      if (url.pathname === '/api/login' && request.method === 'POST') return await login(request, env, url);
+      if (url.pathname === '/api/logout' && request.method === 'POST') {
+        return new Response(JSON.stringify({ ok: true }), {
+          headers: { 'Content-Type': 'application/json; charset=utf-8', 'Set-Cookie': session.sessionCookie('', isSecure(url)) },
         });
       }
-      if (!(await authorized(request, env))) {
-        return new Response('Authentification requise', {
-          status: 401,
-          headers: { 'WWW-Authenticate': 'Basic realm="Vigie", charset="UTF-8"', 'Content-Type': 'text/plain; charset=utf-8' },
-        });
-      }
-      if (url.pathname.startsWith('/api/')) return await route(request, env, url);
-      return env.ASSETS.fetch(request);
+      if (!(await loggedIn(request, env))) return json(401, { error: 'Connexion requise', login: true });
+      if (url.pathname === '/api/me') return json(200, { user: env.VIGIE_USER });
+      return await route(request, env, url);
     } catch (err) {
       if (err instanceof engine.InputError) return json(400, { error: err.message });
       console.error(err);

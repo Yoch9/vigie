@@ -1,17 +1,62 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Activity, Bell, List, Plus, Radar, Search } from 'lucide-react';
-import { api, describeTarget, pct, type AppState, type Monitor, type VigieEvent } from './lib/api';
+import { Activity, Bell, List, LogOut, Plus, Radar, Search } from 'lucide-react';
+import { api, describeTarget, pct, setUnauthorizedHandler, type AppState, type Monitor, type VigieEvent } from './lib/api';
 import { HeartbeatBar, StatusBadge, STATUS } from './components/Status';
 import MonitorDetail from './components/MonitorDetail';
 import MonitorForm from './components/MonitorForm';
 import Notifiers from './components/Notifiers';
 import EventLog from './components/EventLog';
+import Login from './components/Login';
 
 type View = 'monitors' | 'events' | 'notifiers';
 
 const ORDER = { down: 0, pending: 1, unknown: 2, up: 3, paused: 4 };
 
+/** Vérifie la session avant d'afficher le tableau de bord ; sinon, page de connexion. */
 export default function App() {
+  const [user, setUser] = useState<string | null | undefined>(undefined); // undefined = vérification en cours
+  const [authed, setAuthed] = useState<boolean | null>(null);
+  const [offline, setOffline] = useState('');
+
+  const check = useCallback(() => {
+    api.me().then(
+      (r) => {
+        setUser(r.user);
+        setAuthed(true);
+        setOffline('');
+      },
+      (e) => (e.status === 401 ? setAuthed(false) : setOffline(e.message)),
+    );
+  }, []);
+
+  useEffect(() => {
+    setUnauthorizedHandler(() => setAuthed(false));
+    check();
+  }, [check]);
+
+  if (offline) {
+    return (
+      <div className="grid min-h-screen place-items-center p-4 text-center text-sm text-slate-500">
+        <div>
+          <p className="mb-3">Serveur Vigie injoignable : {offline}</p>
+          <button className="btn-primary" onClick={check}>
+            Réessayer
+          </button>
+        </div>
+      </div>
+    );
+  }
+  if (authed === null) return null;
+  if (!authed) return <Login onLoggedIn={check} />;
+  return (
+    <Dashboard
+      user={user ?? null}
+      onLogout={() => api.logout().finally(() => setAuthed(false))}
+    />
+  );
+}
+
+function Dashboard({ user, onLogout }: { user: string | null; onLogout: () => void }) {
   const [state, setState] = useState<AppState | null>(null);
   const [error, setError] = useState('');
   const [view, setView] = useState<View>('monitors');
@@ -160,6 +205,12 @@ export default function App() {
             >
               {connected ? (live ? '● direct' : '● auto') : '○ hors ligne'}
             </span>
+            {user && (
+              <button className="btn-ghost !px-2" onClick={onLogout} title={`Connecté en tant que ${user} — se déconnecter`}>
+                <LogOut size={15} />
+                <span className="hidden sm:inline">Déconnexion</span>
+              </button>
+            )}
           </div>
         </div>
       </header>
@@ -199,7 +250,7 @@ export default function App() {
               {state && monitors.length === 0 && (
                 <div className="card p-6 text-center text-sm text-slate-500">
                   <Radar className="mx-auto mb-2 text-slate-400" size={28} />
-                  Aucune sonde. Ajoutez un site web, un routeur (ping), un port TCP ou un enregistrement DNS à surveiller.
+                  Aucune sonde. Ajoutez un site web, un routeur ({state.capabilities.monitorTypes.includes('ping') ? 'ping' : 'port TCP'}), un port ou un enregistrement DNS à surveiller.
                 </div>
               )}
 

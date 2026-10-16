@@ -88,6 +88,12 @@ export interface AppState {
 /** Valeur renvoyée par le serveur à la place d'un secret déjà enregistré. */
 export const SECRET = '__unchanged__';
 
+/** Appelé quand le serveur répond « connexion requise » (session expirée, mot de passe changé…). */
+let onUnauthorized = () => {};
+export const setUnauthorizedHandler = (fn: () => void) => {
+  onUnauthorized = fn;
+};
+
 async function call<T>(method: string, url: string, body?: unknown): Promise<T> {
   const res = await fetch(url, {
     method,
@@ -95,11 +101,15 @@ async function call<T>(method: string, url: string, body?: unknown): Promise<T> 
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `Erreur HTTP ${res.status}`);
+  if (res.status === 401 && data.login) onUnauthorized();
+  if (!res.ok) throw Object.assign(new Error(data.error || `Erreur HTTP ${res.status}`), { status: res.status });
   return data as T;
 }
 
 export const api = {
+  me: () => call<{ user: string | null }>('GET', '/api/me'),
+  login: (username: string, password: string) => call<{ user: string }>('POST', '/api/login', { username, password }),
+  logout: () => call('POST', '/api/logout'),
   state: () => call<AppState>('GET', '/api/state'),
   version: () => call<Record<string, number>>('GET', '/api/version'),
   events: (monitorId?: string, limit = 200) =>

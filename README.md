@@ -38,6 +38,10 @@ tant que c'est DOWN, et l'alerte d'expiration de certificat. Les échecs d'envoi
 Une exécution planifiée par minute vérifie les sondes dont l'intervalle tombe ; l'état et l'historique
 sont dans une base D1. L'interface est servie par le même Worker, protégée par mot de passe.
 
+**Connexion** : un seul compte, défini par les secrets `VIGIE_USER` / `VIGIE_PASSWORD` (page de connexion,
+session de 30 jours, 10 échecs depuis une même adresse = blocage 15 min). Pour changer d'identifiant ou de mot
+de passe, relancer `npx wrangler secret put …` : toutes les sessions ouvertes sont alors déconnectées.
+
 **Premier déploiement**
 
 ```bash
@@ -89,9 +93,9 @@ npm start                 # sert l'interface et l'API sur PORT (3001)
 ```
 
 Variables : `PORT`, `HOST`, `VIGIE_DATA`, `TZ` (fuseau des messages d'alerte), et surtout
-`VIGIE_USER` / `VIGIE_PASSWORD` qui activent l'authentification HTTP Basic sur l'interface et l'API.
+`VIGIE_USER` / `VIGIE_PASSWORD` qui activent la page de connexion (sans elles, pas de mot de passe).
 Seules `/api/health` et les URL de push restent publiques. Mettez un reverse proxy HTTPS devant
-(Apache/nginx) : l'auth Basic ne doit pas circuler en clair.
+(Apache/nginx, qui transmet `X-Forwarded-Proto`) : le mot de passe ne doit pas circuler en clair.
 
 Service systemd fourni : `deploy/vigie.service` (utilisateur `vigie`, code dans `/opt/vigie`).
 

@@ -2,13 +2,13 @@
 //
 // Variables d'environnement :
 //   PORT (3001), HOST (0.0.0.0), VIGIE_DATA (./data)
-//   VIGIE_USER / VIGIE_PASSWORD : active l'authentification HTTP Basic (fortement conseillé si exposé)
+//   VIGIE_USER / VIGIE_PASSWORD : compte de l'interface (page de connexion) — fortement conseillé si exposé
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { timingSafeEqual, createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import * as engine from './engine.js';
+import * as session from '../shared/session.js';
 
 const PORT = Number(process.env.PORT) || 3001;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -64,16 +64,37 @@ function readBody(req) {
   });
 }
 
-const digest = (s) => createHash('sha256').update(s).digest();
+// --- Connexion -------------------------------------------------------------------
 
-function authorized(req) {
-  if (!USER || !PASSWORD) return true;
-  const header = req.headers.authorization || '';
-  if (!header.startsWith('Basic ')) return false;
-  const [u, ...rest] = Buffer.from(header.slice(6), 'base64').toString('utf8').split(':');
-  const p = rest.join(':');
-  // comparaison à temps constant (sur des empreintes pour avoir des longueurs égales)
-  return Boolean(timingSafeEqual(digest(u), digest(USER)) & timingSafeEqual(digest(p), digest(PASSWORD)));
+const AUTH = Boolean(USER && PASSWORD);
+const failures = new Map(); // adresse IP -> { n, since }
+
+// derrière un reverse proxy HTTPS, le cookie doit être marqué Secure
+const isSecure = (req) => Boolean(req.socket.encrypted) || req.headers['x-forwarded-proto'] === 'https';
+const clientIp = (req) => String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+
+async function loggedIn(req) {
+  return !AUTH || session.verifySession(session.readCookie(req.headers.cookie), USER, PASSWORD);
+}
+
+async function login(req, res) {
+  const ip = clientIp(req);
+  const now = Date.now();
+  let f = failures.get(ip);
+  if (f && now - f.since > session.WINDOW) {
+    failures.delete(ip);
+    f = undefined;
+  }
+  if (f && f.n >= session.MAX_FAILURES) return json(res, 429, { error: 'Trop de tentatives : réessayez dans quelques minutes.' });
+  const { username, password } = await readBody(req);
+  if (!(await session.checkCredentials(username ?? '', password ?? '', USER, PASSWORD))) {
+    failures.set(ip, f ? { ...f, n: f.n + 1 } : { n: 1, since: now });
+    await new Promise((r) => setTimeout(r, 800)); // ralentit les essais en rafale
+    return json(res, 401, { error: 'Identifiant ou mot de passe incorrect' });
+  }
+  failures.delete(ip);
+  res.setHeader('Set-Cookie', session.sessionCookie(await session.createSession(USER, PASSWORD), isSecure(req)));
+  return json(res, 200, { ok: true, user: USER });
 }
 
 function serveStatic(req, res, pathname) {
@@ -161,13 +182,19 @@ const server = http.createServer(async (req, res) => {
       return m ? json(res, 200, { ok: true }) : json(res, 404, { ok: false, error: 'Jeton inconnu' });
     }
 
-    if (!authorized(req)) {
-      res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="Vigie", charset="UTF-8"', 'Content-Type': 'text/plain; charset=utf-8' });
-      return res.end('Authentification requise');
+    // L'interface est publique (aucune donnée dedans) ; toute l'API est protégée.
+    if (!url.pathname.startsWith('/api/')) {
+      if (req.method !== 'GET' && req.method !== 'HEAD') return json(res, 405, { error: 'Méthode non autorisée' });
+      return serveStatic(req, res, url.pathname);
     }
-    if (url.pathname.startsWith('/api/')) return await route(req, res, url);
-    if (req.method !== 'GET' && req.method !== 'HEAD') return json(res, 405, { error: 'Méthode non autorisée' });
-    return serveStatic(req, res, url.pathname);
+    if (AUTH && url.pathname === '/api/login' && req.method === 'POST') return await login(req, res);
+    if (url.pathname === '/api/logout' && req.method === 'POST') {
+      res.setHeader('Set-Cookie', session.sessionCookie('', isSecure(req)));
+      return json(res, 200, { ok: true });
+    }
+    if (!(await loggedIn(req))) return json(res, 401, { error: 'Connexion requise', login: true });
+    if (url.pathname === '/api/me') return json(res, 200, { user: AUTH ? USER : null });
+    return await route(req, res, url);
   } catch (err) {
     if (err instanceof engine.InputError) return json(res, 400, { error: err.message });
     if (url.pathname === '/api/notifiers/test') return json(res, 502, { error: err.message });
@@ -178,7 +205,7 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`[vigie] à l'écoute sur http://${HOST}:${PORT}`);
-  if (!USER || !PASSWORD) console.warn('[vigie] ⚠ aucune authentification (définir VIGIE_USER et VIGIE_PASSWORD avant d’exposer le service)');
+  if (!AUTH) console.warn('[vigie] ⚠ aucune authentification (définir VIGIE_USER et VIGIE_PASSWORD avant d’exposer le service)');
   engine.start();
 });
 
