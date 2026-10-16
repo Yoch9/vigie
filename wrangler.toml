@@ -13,7 +13,7 @@ run_worker_first = true
 [[d1_databases]]
 binding = "DB"
 database_name = "vigie"
-database_id = "00000000-0000-0000-0000-000000000000" # remplacé par l'id donné par « wrangler d1 create vigie »
+database_id = "3127cf58-8e03-4ecf-8b90-affa8ab71f65"
 migrations_dir = "worker/migrations"
 
 # Une exécution par minute : chaque sonde est vérifiée quand son intervalle tombe.
