@@ -1,0 +1,24 @@
+# Vigie sur Cloudflare Workers (offre gratuite) — voir README, section « Cloudflare ».
+name = "vigie"
+main = "worker/index.js"
+compatibility_date = "2025-09-01"
+
+# L'interface (dist/, produite par « npm run build ») ; le Worker passe en premier pour l'authentification.
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "vigie"
+database_id = "00000000-0000-0000-0000-000000000000" # remplacé par l'id donné par « wrangler d1 create vigie »
+migrations_dir = "worker/migrations"
+
+# Une exécution par minute : chaque sonde est vérifiée quand son intervalle tombe.
+[triggers]
+crons = ["* * * * *"]
+
+[vars]
+TIMEZONE = "Europe/Paris"

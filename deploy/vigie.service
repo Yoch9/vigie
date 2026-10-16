@@ -1,0 +1,30 @@
+# /etc/systemd/system/vigie.service
+[Unit]
+Description=Vigie - surveillance de disponibilité
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vigie
+WorkingDirectory=/opt/vigie
+Environment=NODE_ENV=production
+Environment=PORT=3001
+Environment=HOST=127.0.0.1
+Environment=VIGIE_DATA=/opt/vigie/data
+Environment=TZ=Europe/Paris
+# identifiants de l'interface : à mettre dans /etc/vigie.env (chmod 600)
+#   VIGIE_USER=admin
+#   VIGIE_PASSWORD=...
+EnvironmentFile=-/etc/vigie.env
+ExecStart=/usr/bin/node server/index.js
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/vigie/data
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

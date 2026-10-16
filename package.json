@@ -1,0 +1,36 @@
+{
+  "name": "vigie",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Vigie — surveillance de disponibilité (sites web, routeurs, ports, DNS) avec alertes",
+  "scripts": {
+    "dev:server": "node --watch server/index.js",
+    "dev:web": "vite",
+    "build": "tsc --noEmit && vite build",
+    "start": "node server/index.js",
+    "typecheck": "tsc --noEmit",
+    "cf:dev": "wrangler dev --test-scheduled",
+    "cf:deploy": "npm run build && wrangler d1 migrations apply vigie --remote && wrangler deploy"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "nodemailer": "^6.9.16"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.3",
+    "autoprefixer": "^10.4.20",
+    "lucide-react": "^0.462.0",
+    "postcss": "^8.4.47",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tailwindcss": "^3.4.14",
+    "typescript": "~5.6.2",
+    "vite": "^5.4.10",
+    "wrangler": "^4.151.1"
+  }
+}
